@@ -16,7 +16,7 @@ ENV_VARS = [
 SF_REDIRECT_URI = "https://secure.sharefile.com/oauth/oauthcomplete.aspx"
 for _name in ENV_VARS:
     globals()[_name] = os.environ.get(_name)
-SECRET_KEYS, TOKEN_KEYS = {"client_secret", "password"}, {"access_token", "authorization"}
+SECRET_KEYS, TOKEN_KEYS = {"client_secret", "password"}, {"access_token", "authorization", "refresh_token"}
 
 def redact(obj):
     if isinstance(obj, dict):
@@ -108,7 +108,21 @@ def get_sf_token():
     j = call("POST", f"https://{SF_SUBDOMAIN}.sharefile.com/oauth/token", "get_sf_token", data=data)
     token = j.get("access_token", "")
     print(f"access_token: {token[:10]}...  subdomain: {j.get('subdomain')}  appcp: {j.get('appcp')}")
-    return token
+    return token, j.get("refresh_token", "")
+
+def refresh_sf_token(refresh_token):
+    data = {
+        "grant_type": "refresh_token", "client_id": SF_CLIENT_ID,
+        "client_secret": SF_CLIENT_SECRET, "refresh_token": refresh_token,
+    }
+    return call("POST", f"https://{SF_SUBDOMAIN}.sharefile.com/oauth/token", "refresh_sf_token", data=data,
+                headers={"Content-Type": "application/x-www-form-urlencoded"})
+
+def test_sf_refresh_rotation():
+    _, refresh = get_sf_token()
+    rt1 = refresh_sf_token(refresh).get("refresh_token", "")
+    rt2 = refresh_sf_token(rt1).get("refresh_token", "")
+    print("\nREFRESH TOKEN ROTATES" if rt2 != rt1 else "\nREFRESH TOKEN IS STATIC")
 
 def list_sf_folder(token, folder_id):
     url = f"https://{SF_SUBDOMAIN}.sf-api.com/sf/v3/Items({folder_id})/Children"
@@ -144,15 +158,17 @@ STEPS = {
     "2": lambda s: whoami_box(s.get("box_token") or ask("Box token")),
     "3": lambda s: list_box_folder(s.get("box_token") or ask("Box token"), ask("Box folder id", BOX_TEST_FOLDER_ID)),
     "4": lambda s: upload_box_file(s.get("box_token") or ask("Box token"), ask("Box folder id", BOX_TEST_FOLDER_ID)),
-    "5": lambda s: s.update(sf_token=get_sf_token()),
+    "5": lambda s: s.update(zip(("sf_token", "sf_refresh_token"), get_sf_token())),
     "6": lambda s: list_sf_folder(s.get("sf_token") or ask("SF token"), ask("SF folder id", SF_TEST_FOLDER_ID)),
     "7": lambda s: download_sf_file(s.get("sf_token") or ask("SF token"), ask("SF item id to download")),
+    "8": lambda s: test_sf_refresh_rotation(),
 }
 
 def main():
     state = {}
     menu = ("\n1) get_box_token\n2) whoami_box\n3) list_box_folder\n4) upload_box_file\n"
-            "5) get_sf_token\n6) list_sf_folder\n7) download_sf_file\nq) quit\n")
+            "5) get_sf_token\n6) list_sf_folder\n7) download_sf_file\n"
+            "8) test_sf_refresh_rotation\nq) quit\n")
     while True:
         choice = input(menu + "Select step: ").strip().lower()
         if choice == "q":
