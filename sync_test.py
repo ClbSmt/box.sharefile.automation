@@ -2,6 +2,7 @@
 import json
 import os
 import sys
+from urllib.parse import quote
 
 import requests
 from dotenv import load_dotenv
@@ -9,10 +10,10 @@ from dotenv import load_dotenv
 load_dotenv()
 
 ENV_VARS = [
-    "BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_ENTERPRISE_ID", "SF_SUBDOMAIN",
-    "SF_CLIENT_ID", "SF_CLIENT_SECRET", "SF_USERNAME", "SF_PASSWORD",
-    "BOX_TEST_FOLDER_ID", "SF_TEST_FOLDER_ID",
+    "BOX_CLIENT_ID", "BOX_CLIENT_SECRET", "BOX_USER_ID", "SF_SUBDOMAIN",
+    "SF_CLIENT_ID", "SF_CLIENT_SECRET", "BOX_TEST_FOLDER_ID", "SF_TEST_FOLDER_ID",
 ]
+SF_REDIRECT_URI = "https://secure.sharefile.com/oauth/oauthcomplete.aspx"
 for _name in ENV_VARS:
     globals()[_name] = os.environ.get(_name)
 SECRET_KEYS, TOKEN_KEYS = {"client_secret", "password"}, {"access_token", "authorization"}
@@ -46,10 +47,14 @@ def call(method, url, label, data=None, headers=None, files=None):
     return body
 
 def get_box_token():
+    # Impersonates the Box user BOX_USER_ID (box_subject_type=user) instead of the
+    # app's sandboxed service account, so the token carries that user's own folder
+    # access. Requires "Generate User Access Tokens" enabled for this app in the
+    # Box Developer Console.
     data = {
         "grant_type": "client_credentials", "client_id": BOX_CLIENT_ID,
-        "client_secret": BOX_CLIENT_SECRET, "box_subject_type": "enterprise",
-        "box_subject_id": BOX_ENTERPRISE_ID,
+        "client_secret": BOX_CLIENT_SECRET, "box_subject_type": "user",
+        "box_subject_id": BOX_USER_ID,
     }
     j = call("POST", "https://api.box.com/oauth2/token", "get_box_token", data=data)
     token = j.get("access_token", "")
@@ -85,12 +90,22 @@ def upload_box_file(token, folder_id, local_path="sample.txt"):
     return file_id
 
 def get_sf_token():
-    url = f"https://{SF_SUBDOMAIN}.sharefile.com/oauth/token"
+    # Authorization Code flow, not password grant: ShareFile's password grant can't
+    # satisfy an MFA challenge, so accounts with MFA must sign in interactively.
+    authorize_url = (
+        f"https://{SF_SUBDOMAIN}.sharefile.com/oauth/authorize?response_type=code"
+        f"&client_id={SF_CLIENT_ID}&redirect_uri={quote(SF_REDIRECT_URI, safe='')}"
+    )
+    print(f"\n--- get_sf_token (Authorization Code flow) ---")
+    print(f"1. Open this URL in a browser and log in (complete MFA if prompted):\n{authorize_url}")
+    print("2. ShareFile will redirect to its oauthcomplete.aspx page showing a code.")
+    pasted = input("3. Paste that page's URL (or just the 'code' value) here: ").strip()
+    code = pasted.split("code=")[1].split("&")[0] if "code=" in pasted else pasted
     data = {
-        "grant_type": "password", "client_id": SF_CLIENT_ID, "client_secret": SF_CLIENT_SECRET,
-        "username": SF_USERNAME, "password": SF_PASSWORD,
+        "grant_type": "authorization_code", "client_id": SF_CLIENT_ID,
+        "client_secret": SF_CLIENT_SECRET, "code": code, "requirev3": "true",
     }
-    j = call("POST", url, "get_sf_token", data=data, headers={"Content-Type": "application/x-www-form-urlencoded"})
+    j = call("POST", f"https://{SF_SUBDOMAIN}.sharefile.com/oauth/token", "get_sf_token", data=data)
     token = j.get("access_token", "")
     print(f"access_token: {token[:10]}...  subdomain: {j.get('subdomain')}  appcp: {j.get('appcp')}")
     return token
